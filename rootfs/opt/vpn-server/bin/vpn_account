@@ -1,0 +1,91 @@
+#!/usr/bin/env ruby
+
+require "fileutils"
+
+OPEN_VPN="/etc/openvpn"
+EASY_RSA="#{OPEN_VPN}/easy-rsa/2.0"
+CA_DIR="/etc/openvpn/ca"
+
+@env = {
+  "EASY_RSA" => EASY_RSA,
+  "OPENSSL" => "openssl",
+  "PKCS11TOOL" => "pkcs11-tool",
+  "GREP" => "grep",
+  "KEY_CONFIG" => "#{CA_DIR}/openssl.cnf",
+  "KEY_DIR" => "#{CA_DIR}/keys",
+  "PKCS11_MODULE_PATH" => "dummy",
+  "PKCS11_PIN" => "dummy",
+  "KEY_SIZE" => "1024",
+  "CA_EXPIRE" => "3650",
+  "KEY_EXPIRE" => "3650",
+  "KEY_COUNTRY" => "US",
+  "KEY_PROVINCE" => "VA",
+  "KEY_CITY" => "Leesburg",
+  "KEY_ORG" => "Omeganetserv.com",
+  "KEY_EMAIL" => "abates@omeganetserv.com",
+}
+
+def usage message="", code=-1
+  STDERR.puts "#{message}" unless message == ""
+  STDERR.puts "#{$0} add|ban <email> [username]"
+  exit code
+end
+
+def get_binding vars={}
+  b = binding
+  vars.each do |k, v|
+    b.local_variable_set(k.to_sym, v)
+  end
+  return b
+end
+
+def exec cmd, *args
+  IO.popen(@env, [cmd, *args]) do |p|
+    p.each do |out|
+      puts out
+    end
+  end
+end
+
+def create_account email, username=nil
+  raise "Must supply a valid email" if email==""
+  username,domain=email.split(/@/)  if username.nil?
+  key_dir="#{@env["KEY_DIR"]}/#{username}" 
+  @env["KEY_EMAIL"]=email
+  exec("#{EASY_RSA}/pkitool", username)
+  Dir.mkdir(key_dir)
+  FileUtils.mv(Dir.glob("#{@env["KEY_DIR"]}/#{username}.*"), key_dir) 
+
+  Dir.glob("#{CA_DIR}/config/*.ovpn").each do |config_filename|
+    File.open("#{key_dir}/#{File.basename(config_filename)}", "w") do |user_file|
+      File.open(config_filename) do |config_file|
+        config_file.each do |line|
+          user_file.print line
+        end
+      end
+      
+      [
+        ["ca", "#{@env["KEY_DIR"]}/ca.crt"], 
+        ["cert", "#{@env["KEY_DIR"]}/#{username}/#{username}.crt"], 
+        ["key", "#{@env["KEY_DIR"]}/#{username}/#{username}.key"],
+      ].each do |tag, filename|
+        File.open(filename) do |cred_file|
+          user_file.puts "<#{tag}>"
+          cred_file.each do |line|
+            user_file.print line
+          end
+          user_file.puts "</#{tag}>"
+        end
+      end 
+    end
+  end
+end
+
+usage() if ARGV.length < 2
+
+case ARGV[0]
+when "add"
+  create_account(ARGV[1], ARGV[2])
+else
+  usage("Unknown option #{ARGV[0]}")
+end
